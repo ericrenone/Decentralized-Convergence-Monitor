@@ -1,5 +1,7 @@
 # Hyperbolic-Petri-Net-Simulator
-Visual exploration of Petri net executions in the Poincaré disk
+Visual exploration of Petri net executions in the Poincaré disk.
+
+This work introduces a dual-invariant computational validity criterion requiring joint satisfaction of discrete causal reachability and continuous geometric admissibility in curved spaces.
 
 
 ## Features
