@@ -11,7 +11,7 @@
 ## Key Features
 
 - **Canonical Petri Net Simulation**  
-  Supports arbitrary incidence matrices and initial markings.
+  - Supports arbitrary incidence matrices and initial markings.
 
 - **Hyperbolic Poincaré Disk Embedding**  
   - Represents system states in a curved, information-geometric space  
@@ -37,4 +37,3 @@
   - Supports stochastic and deterministic runs with dynamic seed  
 
 
-pip install -r requirements.txt   # optional if matplotlib not installed
