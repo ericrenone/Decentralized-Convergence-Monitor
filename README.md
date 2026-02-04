@@ -1,4 +1,4 @@
-# Hyperbolic Petri Net Simulator: Information-Geometric Dynamics
+# Hyperbolic Petri Net + Information-Geometric Dynamics
 
 ## Core
 
