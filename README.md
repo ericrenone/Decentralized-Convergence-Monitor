@@ -1,39 +1,35 @@
-# Hyperbolic Petri Net + Information-Geometric Dynamics
+# Decentralized Convergence Monitor
 
-## Core
+## Overview
+The **Decentralized Convergence Monitor** is a **real-time visualization tool** for analyzing the **collective behavior of 1,000 autonomous nodes** in a decentralized network. It tracks:
+- **Velocity distribution** of node movements.
+- **Convergence trend** over time (log scale).
 
-- **Petri net logic** to model discrete-state transitions
-- **Hyperbolic embedding** to represent hierarchical or high-dimensional state spaces
-- **Rational inattention constraints** for admissibility verification
-- **Dynamic visualization** of trajectories in real time
-- **Deterministic fingerprinting** for reproducibility and invariant tracking
+**Core Purpose:** Demonstrates **emergent convergence dynamics** in large-scale decentralized systems, with applications in **low-resource optimization**, **consensus protocols**, and **federated learning**.
+
+---
 
 ## Key Features
 
-- **Canonical Petri Net Simulation**  
-  - Supports arbitrary incidence matrices and initial markings.
+### 1. **Real-Time Velocity Distribution**
+- **Histogram** of node velocities, updated dynamically.
+- **Density-based visualization** for intuitive understanding of system behavior.
 
-- **Hyperbolic Poincaré Disk Embedding**  
-  - Represents system states in a curved, information-geometric space  
-  - Preserves hierarchical and exponential growth of state possibilities  
-  - Distance metric corresponds to **Fisher Information Distance**  
+### 2. **Convergence Trend Analysis**
+- **Log-scale time series** of mean velocity.
+- **Dynamic scaling** for real-time feel and clarity.
 
-- **Admissibility and Rational Inattention**  
-  - Ensures system transitions respect a bounded hyperbolic displacement  
-  - Implements a mathematically rigorous **Rational Inattention constraint**  
-  - Detects invariant violations automatically  
+### 3. **Low-Resource Design**
+- **Efficient updates** using vectorized operations.
+- **Minimal dependencies** (NumPy, Matplotlib).
 
-- **Dynamic Visualization**  
-  - Real-time ASCII and matplotlib plots of radius and hyperbolic distance  
-  - Optional PNG output for publication-quality figures  
-
-- **Deterministic Fingerprinting**  
-  - SHA3-256 hash of transition trace and final marking  
-  - Ensures reproducibility across experiments  
-
-- **Research-Focused Metrics**  
-  - Tracks hyperbolic trajectory over steps  
-  - Computes admissibility and free-energy-inspired metrics  
-  - Supports stochastic and deterministic runs with dynamic seed  
+### 4. **Configurable Parameters**
+- **Node count** (`N_NODES`).
+- **Convergence rate** (`ALPHA`).
+- **Noise level** (`NOISE_STD`).
+- **Simulation duration** (`ROUNDS`).
 
 
+**Why it matters:** Models **decentralized consensus** (e.g., federated averaging) with **controlled noise** for robustness.
+
+---
