@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""
+Pinv-NG
+
+License: MIT
+"""
+import torch
+import torch.nn as nn
+from torch.optim import Optimizer
+from typing import Callable, Dict, List, Optional
+import warnings
+import matplotlib.pyplot as plt
+
+# ────────────────────────────────────────────────
+# Empirical Fisher computation
+# ────────────────────────────────────────────────
+def empirical_fisher(per_sample_grads: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    """Compute empirical Fisher information matrix."""
+    B, D = per_sample_grads.shape
+    F = (per_sample_grads.T @ per_sample_grads) / B
+    F = (F + F.T) / 2  # enforce symmetry
+    return F
+
+# ────────────────────────────────────────────────
+# Pseudoinverse Natural Gradient Optimizer
+# ────────────────────────────────────────────────
+class PinvNaturalGradient(Optimizer):
+    def __init__(self, params, lr: float = 0.05, damping: float = 1e-6, eps: float = 1e-10):
+        if lr <= 0.0:
+            raise ValueError("lr must be > 0")
+        if damping < 0.0:
+            raise ValueError("damping must be >= 0")
+        if eps <= 0.0:
+            raise ValueError("eps must be > 0")
+        defaults = dict(lr=lr, damping=damping, eps=eps)
+        super().__init__(params, defaults)
+        self.fisher_rank: Optional[int] = None
+        self.condition_number: Optional[float] = None
+        self.singular_values: Optional[torch.Tensor] = None
+        self._step_count = 0
+
+    @torch.enable_grad()
+    def _compute_per_sample_gradients(
+        self,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        params: List[torch.nn.Parameter]
+    ) -> torch.Tensor:
+        """Compute exact per-sample gradients using autograd.grad (slow but correct)."""
+        B = inputs.size(0)
+        per_sample_grads = []
+        for i in range(B):
+            x_i = inputs[i:i+1]
+            y_i = targets[i:i+1]
+            loss = loss_fn(x_i, y_i)
+            if loss.dim() > 0:
+                loss = loss.mean()
+            grads = torch.autograd.grad(
+                loss,
+                params,
+                allow_unused=True,
+                retain_graph=False,
+            )
+            flat_grad = torch.cat([
+                g.flatten() if g is not None else torch.zeros_like(p).flatten()
+                for g, p in zip(grads, params)
+            ])
+            per_sample_grads.append(flat_grad)
+        return torch.stack(per_sample_grads)
+
+    def _analyze_fisher(self, F: torch.Tensor) -> Dict[str, any]:
+        try:
+            sv = torch.linalg.svdvals(F)
+            threshold = sv[0].item() * 1e-10 if sv[0] > 0 else 1e-10
+            rank = (sv > threshold).sum().item()
+            sv_max, sv_min = sv[0].item(), sv[-1].item()
+            cond = sv_max / (sv_min + 1e-15)
+            null_dim = F.size(0) - rank
+            self.fisher_rank = rank
+            self.condition_number = cond
+            self.singular_values = sv
+            return {
+                'rank': rank,
+                'condition_number': cond,
+                'null_dimension': null_dim,
+                'max_singular_value': sv_max,
+                'min_singular_value': sv_min,
+                'singular_values': sv
+            }
+        except Exception as e:
+            warnings.warn(f"Fisher analysis failed: {e}")
+            return {}
+
+    @torch.no_grad()
+    def step(self, loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor], inputs: torch.Tensor, targets: torch.Tensor) -> Dict[str, any]:
+        params = [p for g in self.param_groups for p in g['params'] if p.requires_grad]
+        if not params:
+            raise RuntimeError("No trainable parameters found")
+        lr = self.param_groups[0]['lr']
+        damping = self.param_groups[0]['damping']
+        eps = self.param_groups[0]['eps']
+
+        # per-sample gradients
+        G = self._compute_per_sample_gradients(loss_fn, inputs, targets, params)
+        B, D = G.shape
+
+        # empirical Fisher
+        F = empirical_fisher(G, eps=eps)
+        spectral_info = self._analyze_fisher(F)
+
+        # damped pseudoinverse
+        F_damped = F + damping * torch.eye(D, device=F.device, dtype=F.dtype)
+        F_pinv = torch.linalg.pinv(F_damped)
+
+        # natural gradient
+        euclidean_grad = G.mean(dim=0)
+        natural_grad = F_pinv @ euclidean_grad
+
+        # update parameters
+        idx = 0
+        for p in params:
+            numel = p.numel()
+            p.add_(-lr * natural_grad[idx:idx + numel].view_as(p))
+            idx += numel
+
+        self._step_count += 1
+        return {
+            'fisher_rank': self.fisher_rank,
+            'condition_number': self.condition_number,
+            'natural_grad_norm': torch.norm(natural_grad).item(),
+            'euclidean_grad_norm': torch.norm(euclidean_grad).item(),
+            'damping_used': damping,
+            'step_count': self._step_count,
+            'batch_size': B,
+            'param_dimension': D,
+            'spectral_info': spectral_info
+        }
+
+# ────────────────────────────────────────────────
+# Demonstration: Rank-deficient linear regression
+# ────────────────────────────────────────────────
+def demo_rank_deficient_regression(d=200, r=5, n=256, steps=400, seed=42, device='cpu', verbose=True):
+    torch.manual_seed(seed)
+    device = torch.device(device)
+
+    # rank-deficient data
+    A = torch.randn(r, d, device=device) * 0.5
+    Z = torch.randn(n, r, device=device)
+    X = Z @ A + 0.02 * torch.randn(n, d, device=device)
+    true_theta = torch.randn(d, device=device)
+    true_theta[r:] = 0.0
+    y = X @ true_theta + 0.1 * torch.randn(n, device=device)
+
+    # model
+    class LinearModel(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.theta = nn.Parameter(torch.randn(dim, device=device) * 0.01)
+        def forward(self, x):
+            return x @ self.theta
+
+    def loss_fn(model, x, y_true):
+        return nn.MSELoss()(model(x), y_true)
+
+    model_sgd = LinearModel(d)
+    model_damped = LinearModel(d)
+    model_pinv = LinearModel(d)
+
+    opt_sgd = torch.optim.SGD(model_sgd.parameters(), lr=0.05)
+    opt_damped = PinvNaturalGradient(model_damped.parameters(), lr=0.05, damping=0.5)
+    opt_pinv = PinvNaturalGradient(model_pinv.parameters(), lr=0.05, damping=1e-5)
+
+    losses_sgd, losses_damped, losses_pinv = [], [], []
+    ranks, conds = [], []
+
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for step in range(steps):
+        # SGD
+        opt_sgd.zero_grad()
+        loss = loss_fn(model_sgd, X, y)
+        loss.backward()
+        opt_sgd.step()
+        losses_sgd.append(loss.item())
+
+        # Damped NG
+        diag_damped = opt_damped.step(lambda x, y_true: loss_fn(model_damped, x, y_true), X, y)
+        losses_damped.append(loss_fn(model_damped, X, y).item())
+
+        # Pinv NG
+        diag_pinv = opt_pinv.step(lambda x, y_true: loss_fn(model_pinv, x, y_true), X, y)
+        losses_pinv.append(loss_fn(model_pinv, X, y).item())
+
+        if diag_pinv.get('fisher_rank'):
+            ranks.append(diag_pinv['fisher_rank'])
+            conds.append(diag_pinv['condition_number'])
+
+        if step % 10 == 0 or step == steps-1:
+            ax.clear()
+            ax.plot(losses_sgd, label='SGD', alpha=0.7)
+            ax.plot(losses_damped, label='Damped-NG λ=0.5', alpha=0.7)
+            ax.plot(losses_pinv, label='Pinv-NG λ=1e-5', alpha=0.9)
+            ax.set_yscale('log')
+            ax.set_xlabel('Steps')
+            ax.set_ylabel('MSE Loss')
+            ax.set_title('Training Progress')
+            ax.legend()
+            plt.pause(0.01)
+    plt.ioff()
+    plt.show()
+
+    return {
+        'losses_sgd': losses_sgd,
+        'losses_damped': losses_damped,
+        'losses_pinv': losses_pinv,
+        'fisher_ranks': ranks,
+        'condition_numbers': conds
+    }
+
+# ────────────────────────────────────────────────
+# Unit tests
+# ────────────────────────────────────────────────
+def run_tests():
+    print("\n" + "="*60 + "\nRUNNING UNIT TESTS\n" + "="*60)
+    grads = torch.randn(16, 10)
+    F = empirical_fisher(grads)
+    assert F.shape == (10, 10)
+    assert torch.allclose(F, F.T, atol=1e-10)
+    print("✓ Test 1 passed: Fisher matrix symmetry and shape")
+
+    eigvals = torch.linalg.eigvalsh(F)
+    assert (eigvals >= -1e-10).all()
+    print("✓ Test 2 passed: Positive semi-definite")
+
+    F_rank2 = torch.diag(torch.tensor([1.0, 1.0, 0.0, 0.0], dtype=torch.float32))
+    g = torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32)
+    F_pinv = torch.linalg.pinv(F_rank2)
+    g_nat = F_pinv @ g
+    assert torch.allclose(g_nat[2:], torch.zeros(2, dtype=g_nat.dtype), atol=1e-12)
+    print("✓ Test 3 passed: Null-space projection")
+
+    model = nn.Linear(5, 1)
+    opt = PinvNaturalGradient(model.parameters(), lr=0.01, damping=1e-4)
+    assert opt.param_groups[0]['lr'] == 0.01
+    assert opt.param_groups[0]['damping'] == 1e-4
+    print("✓ Test 4 passed: Optimizer initialization")
+
+    X = torch.randn(10, 5)
+    y = torch.randn(10, 1)
+    diag = opt.step(lambda x, y_true: nn.MSELoss()(model(x), y_true), X, y)
+    assert 'fisher_rank' in diag
+    assert 'natural_grad_norm' in diag
+    print("✓ Test 5 passed: Optimizer step execution")
+
+    torch.manual_seed(0)
+    X_test = torch.randn(50, 3)
+    true_w = torch.tensor([[1.0], [-0.5], [2.0]])
+    y_test = X_test @ true_w + 0.05 * torch.randn(50, 1)
+    model_test = nn.Linear(3, 1, bias=False)
+    opt_test = PinvNaturalGradient(model_test.parameters(), lr=0.1, damping=1e-5)
+    loss_init = nn.MSELoss()(model_test(X_test), y_test).item()
+    for _ in range(10):
+        opt_test.step(lambda x, y_true: nn.MSELoss()(model_test(x), y_true), X_test, y_test)
+    loss_final = nn.MSELoss()(model_test(X_test), y_test).item()
+    assert loss_final < loss_init
+    print("✓ Test 6 passed: Loss decrease on convex problem")
+
+    print("\nALL UNIT TESTS PASSED ✓")
+
+# ────────────────────────────────────────────────
+# Main
+# ────────────────────────────────────────────────
+if __name__ == '__main__':
+    run_tests()
+    demo_rank_deficient_regression(steps=200, verbose=True)
